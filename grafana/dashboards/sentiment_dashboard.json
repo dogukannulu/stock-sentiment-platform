@@ -1,0 +1,148 @@
+{
+  "title": "Stock Sentiment Intelligence",
+  "uid": "stock-sentiment-v1",
+  "schemaVersion": 38,
+  "version": 2,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Sentiment Score Over Time",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+          "rawSql": "SELECT\n  time_bucket('15 minutes', event_time) AS time,\n  ticker || ' sentiment' AS metric,\n  avg(sentiment_score) AS value\nFROM sentiment_events\nWHERE $__timeFilter(event_time)\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "min": -1,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -0.3 },
+              { "color": "green", "value": 0.3 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Current Signal per Ticker",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 7 },
+      "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+          "rawSql": "SELECT\n  ticker,\n  signal,\n  round(avg_sentiment::numeric, 2) AS avg_sentiment,\n  post_count\nFROM sentiment_signals\nWHERE event_hour >= date_trunc('hour', now()) - interval '1 hour'\nORDER BY ticker",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "signal" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "bullish": { "color": "green",  "text": "BULLISH", "index": 0 } } },
+                  { "type": "value", "options": { "bearish": { "color": "red",    "text": "BEARISH", "index": 1 } } },
+                  { "type": "value", "options": { "neutral": { "color": "yellow", "text": "NEUTRAL", "index": 2 } } }
+                ]
+              },
+              { "id": "custom.displayMode", "value": "color-background" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "avg_sentiment" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "gradient-gauge" },
+              { "id": "min", "value": -1 },
+              { "id": "max", "value": 1 }
+            ]
+          }
+        ]
+      },
+      "options": { "sortBy": [{ "displayName": "ticker" }] }
+    },
+    {
+      "id": 3,
+      "title": "Price vs Sentiment Overlay",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 7 },
+      "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+          "rawSql": "SELECT\n  time_bucket('15 minutes', event_time) AS time,\n  ticker || ' price' AS metric,\n  avg(price) AS value\nFROM price_ticks\nWHERE $__timeFilter(event_time)\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series",
+          "rawQuery": true
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+          "rawSql": "SELECT\n  time_bucket('15 minutes', event_time) AS time,\n  ticker || ' sentiment' AS metric,\n  avg(sentiment_score) AS value\nFROM sentiment_events\nWHERE $__timeFilter(event_time)\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byNamePattern", "options": ".*sentiment.*" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "min", "value": -1 },
+              { "id": "max", "value": 1 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 4,
+      "title": "News Article Volume by Ticker",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 7 },
+      "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
+          "rawSql": "SELECT\n  time_bucket('1 hour', event_time) AS time,\n  ticker,\n  count(*) AS article_count\nFROM news_articles\nWHERE $__timeFilter(event_time)\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series",
+          "rawQuery": true
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    }
+  ]
+}

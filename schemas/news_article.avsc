@@ -1,0 +1,16 @@
+{
+  "type": "record",
+  "name": "NewsArticle",
+  "namespace": "com.sentiment.pipeline",
+  "fields": [
+    {"name": "event_time",         "type": "string"},
+    {"name": "ticker",             "type": "string"},
+    {"name": "article_id",         "type": "string"},
+    {"name": "title",              "type": ["null", "string"], "default": null},
+    {"name": "body",               "type": ["null", "string"], "default": null},
+    {"name": "source",             "type": ["null", "string"], "default": null},
+    {"name": "url",                "type": ["null", "string"], "default": null},
+    {"name": "av_sentiment_score", "type": ["null", "double"], "default": null},
+    {"name": "av_sentiment_label", "type": ["null", "string"], "default": null}
+  ]
+}

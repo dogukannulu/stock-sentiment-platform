@@ -1,0 +1,14 @@
+name: sentiment_platform
+version: "1.0.0"
+config-version: 2
+profile: sentiment_platform
+model-paths: ["models"]
+models:
+  sentiment_platform:
+    staging:
+      materialized: view
+    marts:
+      materialized: table
+    analytics:
+      materialized: table
+      schema: analytics

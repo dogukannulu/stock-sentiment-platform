@@ -1,0 +1,12 @@
+sentiment_platform:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      port: 5432
+      dbname: sentiment_db
+      user: sentiment_user
+      password: "{{ env_var('TIMESCALE_PASSWORD') }}"
+      schema: public
+      threads: 4

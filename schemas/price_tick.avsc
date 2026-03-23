@@ -1,0 +1,12 @@
+{
+  "type": "record",
+  "name": "PriceTick",
+  "namespace": "com.sentiment.pipeline",
+  "fields": [
+    {"name": "event_time", "type": "string"},
+    {"name": "ticker",     "type": "string"},
+    {"name": "price",      "type": "double"},
+    {"name": "volume",     "type": ["null", "long"], "default": null},
+    {"name": "source",     "type": "string", "default": "yahoo_finance"}
+  ]
+}
