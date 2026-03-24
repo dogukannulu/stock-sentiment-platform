@@ -95,7 +95,7 @@
         {
           "refId": "A",
           "datasource": { "type": "postgres", "uid": "P40AE60E18F02DE32" },
-          "rawSql": "SELECT\n  time_bucket('15 minutes', event_time) AS time,\n  ticker || ' price' AS metric,\n  avg(price) AS value\nFROM price_ticks\nWHERE $__timeFilter(event_time)\nGROUP BY 1, 2\nORDER BY 1",
+          "rawSql": "SELECT\n  time_bucket('1 minute', event_time) AS time,\n  ticker || ' price' AS metric,\n  avg(price) AS value\nFROM price_ticks\nWHERE $__timeFilter(event_time)\nGROUP BY 1, 2\nORDER BY 1",
           "format": "time_series",
           "rawQuery": true
         },

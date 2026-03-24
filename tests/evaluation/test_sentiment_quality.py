@@ -25,7 +25,15 @@ deepeval = pytest.importorskip("deepeval", reason="pip install deepeval to run e
 from deepeval import evaluate
 from deepeval.metrics import GEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+from deepeval.models.llms.anthropic_model import AnthropicModel
+from deepeval.evaluate.configs import AsyncConfig
 from flink_jobs.sentiment_job import score_batch
+
+# Use Claude as the GEval judge (avoids needing an OpenAI key)
+_judge = AnthropicModel(
+    model="claude-haiku-4-5-20251001",
+    api_key=os.environ.get("ANTHROPIC_API_KEY"),
+)
 
 
 @pytest.fixture(scope="module")
@@ -51,6 +59,8 @@ faithfulness_metric = GEval(
         LLMTestCaseParams.EXPECTED_OUTPUT,
     ],
     threshold=0.75,
+    model=_judge,
+    async_mode=False,
 )
 
 score_calibration_metric = GEval(
@@ -66,15 +76,22 @@ score_calibration_metric = GEval(
         LLMTestCaseParams.EXPECTED_OUTPUT,
     ],
     threshold=0.80,
+    model=_judge,
+    async_mode=False,
 )
 
 
 def test_sentiment_faithfulness(golden_dataset):
-    """Test that Claude Haiku's sentiment labels match ground truth labels."""
+    """Test that Claude Haiku's sentiment labels match ground truth labels.
+    Uses first 10 examples to stay within free-tier rate limits (50 RPM).
+    GEval makes 2 API calls per test case, so 10 cases = 20 calls.
+    Run test_score_direction_accuracy for the full 50-example coverage.
+    """
     test_cases = []
+    sample = golden_dataset[:10]
 
-    for i in range(0, len(golden_dataset), 10):
-        batch = golden_dataset[i:i + 10]
+    for i in range(0, len(sample), 10):
+        batch = sample[i:i + 10]
         posts = [
             {
                 "post_id": str(j),
@@ -84,6 +101,7 @@ def test_sentiment_faithfulness(golden_dataset):
             }
             for j, item in enumerate(batch, start=i)
         ]
+
         results = asyncio.run(score_batch(posts))
 
         for item, result in zip(batch, results):
@@ -95,16 +113,14 @@ def test_sentiment_faithfulness(golden_dataset):
                 expected_output=item["expected_sentiment"],
             ))
 
-    evaluate(test_cases, [faithfulness_metric, score_calibration_metric])
-
-    passed = sum(
-        1 for tc in test_cases
-        if all(
-            m.success
-            for m in (tc.metrics_data or [])
-        )
+    eval_result = evaluate(
+        test_cases,
+        [faithfulness_metric, score_calibration_metric],
+        async_config=AsyncConfig(run_async=True, max_concurrent=3, throttle_value=2),
     )
-    total = len(test_cases)
+
+    passed = sum(1 for tr in eval_result.test_results if tr.success)
+    total = len(eval_result.test_results)
     accuracy = passed / total * 100
     print(f"\nSentiment accuracy: {accuracy:.1f}% ({passed}/{total})")
 

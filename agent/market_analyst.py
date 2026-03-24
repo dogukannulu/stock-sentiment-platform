@@ -12,9 +12,8 @@ import psycopg2
 import pandas as pd
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain.tools import tool
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
 import logging
 
 load_dotenv()
@@ -77,25 +76,19 @@ def query_sentiment_data(sql: str) -> str:
         return f"Query error: {e}"
 
 
-def build_agent() -> AgentExecutor:
+def build_agent():
     llm = ChatAnthropic(
         model="claude-haiku-4-5-20251001",
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
         temperature=0,
     )
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
-    agent = create_tool_calling_agent(llm, [query_sentiment_data], prompt)
-    return AgentExecutor(agent=agent, tools=[query_sentiment_data], verbose=True)
+    return create_react_agent(llm, [query_sentiment_data], prompt=SYSTEM_PROMPT)
 
 
 def get_market_brief(question: str) -> str:
-    executor = build_agent()
-    result = executor.invoke({"input": question})
-    return result["output"]
+    agent = build_agent()
+    result = agent.invoke({"messages": [{"role": "user", "content": question}]})
+    return result["messages"][-1].content
 
 
 if __name__ == "__main__":

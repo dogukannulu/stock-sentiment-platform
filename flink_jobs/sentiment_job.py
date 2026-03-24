@@ -2,15 +2,10 @@ import os
 import json
 import asyncio
 import logging
+import threading
 import psycopg2
 from dotenv import load_dotenv
-from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.datastream.connectors.kafka import (
-    KafkaSource, KafkaOffsetsInitializer
-)
-from pyflink.common.serialization import SimpleStringSchema
-from pyflink.common import WatermarkStrategy
-from pyflink.datastream.functions import MapFunction
+from kafka import KafkaConsumer
 import anthropic
 
 load_dotenv()
@@ -34,9 +29,14 @@ Respond ONLY with a JSON object, no other text:
 Article: {text}"""
 
 
+class MapFunction:
+    def open(self, runtime_context=None): pass
+    def map(self, value): return value
+
+
 class NewsEnricher(MapFunction):
 
-    def open(self, runtime_context):
+    def open(self, runtime_context=None):
         self.client = anthropic.Anthropic(
             api_key=os.environ.get("ANTHROPIC_API_KEY")
         )
@@ -76,7 +76,15 @@ class NewsEnricher(MapFunction):
                     "content": SENTIMENT_PROMPT.format(text=text)
                 }],
             )
-            sentiment = json.loads(message.content[0].text.strip())
+            raw_response = message.content[0].text.strip()
+            logger.debug(f"Claude raw response: {raw_response!r}")
+            # Strip markdown code fences if Claude wraps in ```json ... ```
+            if raw_response.startswith("```"):
+                raw_response = raw_response.split("```")[1]
+                if raw_response.startswith("json"):
+                    raw_response = raw_response[4:]
+                raw_response = raw_response.strip()
+            sentiment = json.loads(raw_response)
 
             # Write enriched result to sentiment_events table
             with self.conn.cursor() as cur:
@@ -116,7 +124,7 @@ class NewsEnricher(MapFunction):
 
 class PriceWriter(MapFunction):
 
-    def open(self, runtime_context):
+    def open(self, runtime_context=None):
         self.conn = psycopg2.connect(**DB_CONFIG)
         self.conn.autocommit = True
 
@@ -141,35 +149,44 @@ class PriceWriter(MapFunction):
         return value
 
 
-def build_kafka_source(topic, group_id):
-    return (
-        KafkaSource.builder()
-        .set_bootstrap_servers(BOOTSTRAP_SERVERS)
-        .set_topics(topic)
-        .set_group_id(group_id)
-        .set_starting_offsets(KafkaOffsetsInitializer.latest())
-        .set_value_only_deserializer(SimpleStringSchema())
-        .build()
+def _run_consumer(topic, group_id, handler):
+    """Consume a Kafka topic and pass each message value to handler.map()."""
+    handler.open()
+    consumer = KafkaConsumer(
+        topic,
+        bootstrap_servers=BOOTSTRAP_SERVERS,
+        group_id=group_id,
+        auto_offset_reset="latest",
+        value_deserializer=lambda v: v.decode("utf-8"),
     )
+    logger.info(f"Consuming from '{topic}' (group: {group_id})")
+    for msg in consumer:
+        handler.map(msg.value)
 
 
 def main():
-    env = StreamExecutionEnvironment.get_execution_environment()
-    env.set_parallelism(1)
-    wm = WatermarkStrategy.for_monotonous_timestamps()
+    logger.info("Starting sentiment job (threaded Kafka consumers)...")
 
-    news_stream = env.from_source(
-        build_kafka_source("news-articles", "sentiment-job-news"), wm, "News"
+    news_thread = threading.Thread(
+        target=_run_consumer,
+        args=("news-articles", "sentiment-job-news", NewsEnricher()),
+        daemon=True,
     )
-    price_stream = env.from_source(
-        build_kafka_source("price-ticks", "sentiment-job-price"), wm, "Price"
+    price_thread = threading.Thread(
+        target=_run_consumer,
+        args=("price-ticks", "sentiment-job-price", PriceWriter()),
+        daemon=True,
     )
 
-    news_stream.map(NewsEnricher())
-    price_stream.map(PriceWriter())
+    news_thread.start()
+    price_thread.start()
 
-    logger.info("Starting Flink sentiment job...")
-    env.execute("Stock Sentiment Job")
+    logger.info("Both consumers running. Press Ctrl+C to stop.")
+    try:
+        news_thread.join()
+        price_thread.join()
+    except KeyboardInterrupt:
+        logger.info("Shutting down sentiment job.")
 
 
 async def score_batch(posts: list) -> list:
@@ -196,7 +213,13 @@ async def score_batch(posts: list) -> list:
                 "content": SENTIMENT_PROMPT.format(text=text),
             }],
         )
-        result = json.loads(message.content[0].text.strip())
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        result = json.loads(raw)
         results.append({
             "post_id":   post.get("post_id"),
             "symbol":    post.get("symbol"),
