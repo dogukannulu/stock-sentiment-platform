@@ -212,3 +212,4 @@ dbt/profiles.yml
 .DS_Store
 dbt_packages/
 logs/
+docs/

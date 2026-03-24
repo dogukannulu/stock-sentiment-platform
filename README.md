@@ -14,7 +14,7 @@ Yahoo Finance (yfinance)      Alpha Vantage News API
                     |
             Confluent Schema Registry
                     |
-            Flink Sentiment Job
+            Sentiment Job (Python threads)
             (Claude Haiku scores each article → TimescaleDB)
                     |
             TimescaleDB
@@ -25,7 +25,7 @@ Yahoo Finance (yfinance)      Alpha Vantage News API
                     |
         ┌───────────┴────────────┐
    Grafana Dashboard      AI Market Analyst Agent
-   (4 live panels)        (LangChain + FastAPI /brief)
+   (4 live panels)        (LangGraph + FastAPI /brief)
 ```
 
 ## Stack
@@ -34,13 +34,13 @@ Yahoo Finance (yfinance)      Alpha Vantage News API
 |---|---|
 | Message broker | Apache Kafka + Zookeeper |
 | Schema contracts | Confluent Schema Registry (Avro) |
-| Stream processing | Apache Flink (PyFlink) |
+| Stream processing | Threaded Kafka Consumers (Python) |
 | Sentiment scoring | Anthropic Claude API (claude-haiku-4-5) |
 | Time-series storage | TimescaleDB (Postgres 15) |
 | Transformations | dbt-postgres |
 | Visualization | Grafana 10 |
-| Market analyst agent | LangChain + FastAPI |
-| LLM evaluation | DeepEval GEval |
+| Market analyst agent | LangGraph + FastAPI |
+| LLM evaluation | DeepEval GEval (Claude as judge) |
 | Orchestration | Docker Compose |
 
 ## Prerequisites
@@ -79,26 +79,18 @@ docker ps   # 6 containers: zookeeper, kafka, kafka-ui, schema-registry, timesca
 
 ```bash
 pip install kafka-python yfinance requests python-dotenv anthropic psycopg2-binary \
-            dbt-postgres apache-flink==1.18.0 \
-            langchain langchain-anthropic fastapi uvicorn \
+            dbt-postgres pandas \
+            langchain langchain-anthropic langgraph fastapi uvicorn \
             deepeval pytest
 ```
 
-### 4. Install Flink Kafka connector JAR
-
-```bash
-FLINK_LIB=$(python -c "import pyflink, os; print(os.path.join(os.path.dirname(pyflink.__file__), 'lib'))")
-curl -L https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.0.2-1.18/flink-sql-connector-kafka-3.0.2-1.18.jar \
-  -o "$FLINK_LIB/flink-sql-connector-kafka-3.0.2-1.18.jar"
-```
-
-### 5. Register Avro schemas and create Kafka topics
+### 4. Register Avro schemas and create Kafka topics
 
 ```bash
 python producers/kafka_admin.py
 ```
 
-### 6. Run the pipeline
+### 5. Run the pipeline
 
 Open three terminals:
 
@@ -109,11 +101,11 @@ python producers/price_producer.py
 # Terminal 2 — news producer (polls every 60min, Alpha Vantage free tier)
 python producers/news_producer.py
 
-# Terminal 3 — Flink sentiment job (Claude scores each article)
+# Terminal 3 — sentiment job (Claude scores each article in real time)
 python flink_jobs/sentiment_job.py
 ```
 
-### 7. Run dbt transformations
+### 6. Run dbt transformations
 
 ```bash
 export $(grep -v '^#' .env | xargs)
@@ -121,15 +113,16 @@ cd dbt && dbt run
 # Optionally cron this every 15 minutes
 ```
 
-### 8. Open the dashboard
+### 7. Open the dashboard
 
 Navigate to **http://localhost:3000/d/stock-sentiment-v1**
 
-### 9. Start the Market Analyst Agent API (optional)
+### 8. Start the Market Analyst Agent API (optional)
 
 ```bash
 uvicorn agent.api:app --reload --port 8000
 # POST http://localhost:8000/brief  {"question": "What's the sentiment on NVDA today?"}
+# GET  http://localhost:8000/docs   — Swagger UI
 ```
 
 ## Dashboard Panels
@@ -138,18 +131,27 @@ uvicorn agent.api:app --reload --port 8000
 |---|---|
 | Sentiment Score Over Time | 15-min avg Claude sentiment score per ticker |
 | Current Signal per Ticker | Bullish / Bearish / Neutral signal for current hour |
-| Price vs Sentiment Overlay | Price and sentiment on dual Y-axis |
+| Price vs Sentiment Overlay | 1-min price bars + 15-min sentiment on dual Y-axis |
 | News Article Volume | Hourly article count per ticker |
 
 ## Market Analyst Agent
 
-A LangChain agent backed by `claude-haiku-4-5` that answers natural-language questions about the market by querying the `analytics.*` tables directly.
+A LangGraph agent backed by `claude-haiku-4-5` that answers natural-language questions about the market by querying the `analytics.*` tables directly.
 
 ```bash
 curl -s -X POST http://localhost:8000/brief \
   -H "Content-Type: application/json" \
   -d '{"question": "Which tickers have the most bullish sentiment in the last 6 hours?"}' \
   | jq .brief
+```
+
+Example output:
+```
+**Symbol:** NVDA
+**Sentiment:** Strongly positive at 0.95, with positive momentum
+**Price:** $175.64, mixed recent price action (-0.96% last hour)
+**Signal:** Sentiment-price divergence detected — bullish sentiment not yet reflected in price
+**Confidence:** Low-Medium (sparse mention volume)
 ```
 
 ## Tracked Tickers
@@ -160,20 +162,25 @@ curl -s -X POST http://localhost:8000/brief \
 
 ```bash
 # Unit + integration tests (requires Docker stack running)
+export $(grep -v '^#' .env | xargs)
 pytest tests/ -v --ignore=tests/evaluation
 
-# GEval sentiment quality evaluation (~$0.05, requires ANTHROPIC_API_KEY)
-pip install deepeval
+# GEval sentiment quality evaluation (uses Claude as judge, ~$0.05)
 pytest tests/evaluation/ -v -s
 ```
 
 | Test suite | Count | Requires |
 |---|---|---|
-| Unit tests (producers + Flink job) | 23 | Nothing |
+| Unit tests (producers + sentiment job) | 23 | Nothing (mocked) |
 | Integration — Kafka flow | 4 | `docker compose up -d` |
 | Integration — TimescaleDB | 8 | `docker compose up -d` |
-| Integration — dbt models | 6 | `docker compose up -d` + dbt installed |
-| GEval quality evaluation | 2 | `ANTHROPIC_API_KEY` + `pip install deepeval` |
+| Integration — dbt models | 6 | `docker compose up -d` + dbt |
+| GEval faithfulness (10 examples) | 1 | `ANTHROPIC_API_KEY` |
+| Score direction accuracy (50 examples) | 1 | `ANTHROPIC_API_KEY` |
+
+**Evaluation results on golden dataset:**
+- Label faithfulness (GEval): **100%** on 10-example sample
+- Score direction accuracy: **96%** (48/50 correct sign)
 
 ## Cost Estimate
 
@@ -198,7 +205,7 @@ stock-sentiment-platform/
 ├── flink_jobs/
 │   └── sentiment_job.py        # Claude sentiment scoring → TimescaleDB
 ├── agent/
-│   ├── market_analyst.py       # LangChain agent with SQL tool
+│   ├── market_analyst.py       # LangGraph agent with SQL tool
 │   └── api.py                  # FastAPI wrapper (POST /brief)
 ├── dbt/
 │   ├── macros/
@@ -214,7 +221,7 @@ stock-sentiment-platform/
 ├── sql/
 │   └── init.sql                # TimescaleDB hypertables + indexes
 ├── tests/
-│   ├── conftest.py             # pyflink/anthropic mocks for unit tests
+│   ├── conftest.py             # anthropic/pyflink mocks for unit tests
 │   ├── test_price_producer.py
 │   ├── test_news_producer.py
 │   ├── test_sentiment_job.py
@@ -223,8 +230,9 @@ stock-sentiment-platform/
 │   │   ├── test_db_flow.py
 │   │   └── test_dbt_models.py
 │   └── evaluation/
+│       ├── conftest.py             # restores real anthropic for eval tests
 │       ├── golden_dataset.json     # 50 hand-labeled financial news examples
-│       └── test_sentiment_quality.py  # GEval faithfulness + score calibration
+│       └── test_sentiment_quality.py  # GEval faithfulness + score direction
 ├── docker-compose.yml
 └── .env.example
 ```
